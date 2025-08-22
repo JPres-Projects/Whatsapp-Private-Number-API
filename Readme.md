@@ -410,3 +410,245 @@ sudo journalctl -u whatsapp-api -f
 ---
 
 **🚀 Ready to automate your WhatsApp communications!**
+
+## 📱 Adding Multiple WhatsApp Numbers (Advanced)
+
+You can run multiple WhatsApp APIs simultaneously, each connected to a different phone number on different ports and subdomains.
+
+### Prerequisites for Multiple APIs
+
+- Multiple phone numbers/SIM cards
+- Each API runs on a different port (8080, 8081, 8082, etc.)
+- Each API needs its own Cloudflare tunnel and subdomain 
+- The new port needs to be added in the Cloud config as done before (🏗️ Oracle Cloud Server Setup) 
+
+### Step-by-Step Setup for Second API
+
+#### 1. Copy and Prepare Second API
+
+```bash
+# Copy the entire project for second API
+cd /home/ubuntu
+cp -r Whatsapp-Private-Number-API Whatsapp-Private-Number-API-2
+cd Whatsapp-Private-Number-API-2/whatsapp-bridge
+
+# Remove existing session data
+rm -rf store/
+
+# Clean up conflicting binaries from copy
+rm whatsapp-api  # Remove original binary name
+```
+
+#### 2. Change Port Configuration
+
+```bash
+# Find and change port in code (should be line ~912)
+grep -n "808" main.go
+sed -i 's/8080/8081/g' main.go
+
+# Verify change
+grep -n "808" main.go  # Should show 8081 now
+
+# Build new binary with different name
+export CGO_ENABLED=1
+go build -o whatsapp-api2 main.go
+```
+
+#### 3. Cloudflare Tunnel Setup (Windows)
+
+**Important:** Tunnel creation must be done from Windows as Ubuntu servers are headless and cannot open browsers for authentication.
+
+```powershell
+# On Windows PowerShell
+cd C:\Users\[YOUR_USERNAME]\.cloudflared
+
+# Create second tunnel
+.\cloudflared.exe tunnel create whatsapp-api2
+
+# Set DNS for second subdomain  
+.\cloudflared.exe tunnel route dns whatsapp-api2 whatsapp-api2.yourdomain.com
+```
+
+This will generate a new tunnel ID and credentials file.
+
+#### 4. Ubuntu Cloudflare Configuration
+
+```bash
+# Create second tunnel config
+sudo nano /etc/cloudflared/whatsapp-api2-config.yml
+```
+
+**Configuration content:**
+```yaml
+tunnel: whatsapp-api2
+credentials-file: /home/ubuntu/.cloudflared/[NEW-TUNNEL-ID].json
+
+ingress:
+  - hostname: whatsapp-api2.yourdomain.com
+    service: http://127.0.0.1:8081  # Note port 8081
+  - service: http_status:404
+```
+
+```bash
+# Copy credentials from Windows to Ubuntu
+nano /home/ubuntu/.cloudflared/[NEW-TUNNEL-ID].json
+# Paste the complete JSON content from Windows file
+```
+
+#### 5. Avoiding Service Conflicts
+
+```bash
+# Remove generic config if it exists (prevents conflicts)
+sudo rm -f /etc/cloudflared/config.yml
+
+# Create manual systemd service for second tunnel
+sudo nano /etc/systemd/system/cloudflared-api2.service
+```
+
+**Service content:**
+```ini
+[Unit]
+Description=Cloudflared API2 Tunnel
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+ExecStart=/usr/bin/cloudflared --config /etc/cloudflared/whatsapp-api2-config.yml tunnel run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### 6. WhatsApp API2 System Service
+
+```bash
+# Create WhatsApp API2 service
+sudo nano /etc/systemd/system/whatsapp-api2.service
+```
+
+**Service content:**
+```ini
+[Unit]
+Description=WhatsApp API2 Service
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/Whatsapp-Private-Number-API-2/whatsapp-bridge
+ExecStart=/home/ubuntu/Whatsapp-Private-Number-API-2/whatsapp-bridge/whatsapp-api2
+Restart=always
+RestartSec=10
+Environment=CGO_ENABLED=1
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### 7. Start All Services
+
+```bash
+# Reload systemd
+sudo systemctl daemon-reload
+
+# Enable and start Cloudflare tunnel for API2
+sudo systemctl enable cloudflared-api2
+sudo systemctl start cloudflared-api2
+
+# Enable and start WhatsApp API2
+sudo systemctl enable whatsapp-api2
+sudo systemctl start whatsapp-api2
+```
+
+#### 8. WhatsApp Authentication
+
+```bash
+# First run to get QR code for second phone number
+cd /home/ubuntu/Whatsapp-Private-Number-API-2/whatsapp-bridge
+./whatsapp-api2
+
+# Scan QR code with your SECOND phone number
+# After successful connection, Ctrl+C and restart service:
+sudo systemctl restart whatsapp-api2
+```
+
+#### 9. Verify Both APIs
+
+```bash
+# Check all services
+sudo systemctl status cloudflared        # API1 tunnel
+sudo systemctl status cloudflared-api2   # API2 tunnel  
+sudo systemctl status whatsapp-api       # API1 WhatsApp
+sudo systemctl status whatsapp-api2      # API2 WhatsApp
+
+# Test both APIs
+curl -X POST https://whatsapp-api1.yourdomain.com/api/send \
+  -H "Content-Type: application/json" \
+  -d '{"recipient":"PHONE1","message":"Test from API1"}'
+
+curl -X POST https://whatsapp-api2.yourdomain.com/api/send \
+  -H "Content-Type: application/json" \
+  -d '{"recipient":"PHONE2","message":"Test from API2"}'
+```
+
+### Multiple APIs Management
+
+```bash
+# Stop specific API
+sudo systemctl stop whatsapp-api2
+sudo systemctl stop cloudflared-api2
+
+# Restart specific API
+sudo systemctl restart whatsapp-api2
+sudo systemctl restart cloudflared-api2
+
+# View logs for specific API
+sudo journalctl -u whatsapp-api2 -f
+sudo journalctl -u cloudflared-api2 -f
+```
+
+### Important Notes for Multiple APIs
+
+- **Each API needs a unique port** (8080, 8081, 8082, etc.)
+- **Each API needs its own subdomain** (api1.domain.com, api2.domain.com)
+- **Session data is isolated** - each API maintains its own `store/` directory
+- **WhatsApp allows up to 4 linked devices** per phone number
+- **Both APIs can run simultaneously** without interference
+- **Each phone number maintains its own 14-day session timer**
+
+### Scaling to More APIs
+
+To add a third, fourth API, etc.:
+1. Repeat the process with new ports (8082, 8083, etc.)
+2. Create new tunnel names (whatsapp-api3, whatsapp-api4, etc.)
+3. Use new subdomain names (whatsapp-api3.domain.com, etc.)
+4. Ensure each has unique service names (whatsapp-api3, cloudflared-api3, etc.)
+
+### Troubleshooting Multiple APIs
+
+**Port Conflicts:**
+```bash
+# Check which ports are in use
+sudo netstat -tulpn | grep 808
+
+# Verify port in code
+grep -n "808" /path/to/main.go
+```
+
+**Service Conflicts:**
+```bash
+# List all cloudflared services
+sudo systemctl list-units | grep cloudflared
+
+# Remove conflicting generic configs
+sudo rm -f /etc/cloudflared/config.yml
+```
+
+**Authentication Issues:**
+- Each API needs separate QR code scan with different phone numbers
+- Sessions are independent - one API disconnecting doesn't affect others
+- Check logs individually: `sudo journalctl -u whatsapp-api2 -f`
