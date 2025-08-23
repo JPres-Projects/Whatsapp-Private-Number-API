@@ -1,6 +1,8 @@
 # WhatsApp Private Number API
 
-A self-hosted REST API that connects to your personal WhatsApp account, allowing you to send and receive messages programmatically from your own phone number. This enables you to integrate WhatsApp messaging into your applications, automation systems, or scripts without relying on third-party services.
+A basic self-hosted REST API that connects to your personal WhatsApp account, allowing you to send and receive messages programmatically from your own phone number. This enables you to integrate WhatsApp messaging into your applications, automation systems, or scripts without relying on third-party services.
+
+This API is ideal for localhost use cases, as other solutions offer more extensive data sending and retrieval capabilities.
 
 ## 🎯 Purpose & Use Cases
 
