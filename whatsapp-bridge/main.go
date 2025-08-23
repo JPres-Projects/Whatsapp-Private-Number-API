@@ -32,7 +32,9 @@ import (
 )
 
 // Message represents a chat message for our client
+
 type Message struct {
+	ID        string
 	Time      time.Time
 	Sender    string
 	Content   string
@@ -127,7 +129,7 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 // Get messages from a chat
 func (store *MessageStore) GetMessages(chatJID string, limit int) ([]Message, error) {
 	rows, err := store.db.Query(
-		"SELECT sender, content, timestamp, is_from_me, media_type, filename FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT ?",
+		"SELECT id, sender, content, timestamp, is_from_me, media_type, filename FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT ?",
 		chatJID, limit,
 	)
 	if err != nil {
@@ -139,7 +141,7 @@ func (store *MessageStore) GetMessages(chatJID string, limit int) ([]Message, er
 	for rows.Next() {
 		var msg Message
 		var timestamp time.Time
-		err := rows.Scan(&msg.Sender, &msg.Content, &timestamp, &msg.IsFromMe, &msg.MediaType, &msg.Filename)
+		err := rows.Scan(&msg.ID, &msg.Sender, &msg.Content, &timestamp, &msg.IsFromMe, &msg.MediaType, &msg.Filename)
 		if err != nil {
 			return nil, err
 		}
@@ -777,6 +779,283 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		})
 	})
 
+	// Handler for getting chats
+	http.HandleFunc("/api/chats", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		chats, err := messageStore.GetChats()
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Failed to get chats: %v", err),
+			})
+			return
+		}
+
+		// Convert to response format
+		chatList := make([]map[string]interface{}, 0, len(chats))
+		for jid, lastMessageTime := range chats {
+			chatList = append(chatList, map[string]interface{}{
+				"jid":               jid,
+				"last_message_time": lastMessageTime.Format(time.RFC3339),
+			})
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"data":    chatList,
+		})
+	})
+
+	// Handler for getting messages
+	http.HandleFunc("/api/messages", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		chatJID := r.URL.Query().Get("chat_jid")
+		if chatJID == "" {
+			http.Error(w, "chat_jid parameter is required", http.StatusBadRequest)
+			return
+		}
+
+		limitStr := r.URL.Query().Get("limit")
+		limit := 20
+		if limitStr != "" {
+			if l, err := fmt.Sscanf(limitStr, "%d", &limit); err != nil || l != 1 {
+				limit = 20
+			}
+		}
+
+		messages, err := messageStore.GetMessages(chatJID, limit)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Failed to get messages: %v", err),
+			})
+			return
+		}
+
+		// Convert to response format
+
+		messageList := make([]map[string]interface{}, 0, len(messages))
+		for _, msg := range messages {
+			messageList = append(messageList, map[string]interface{}{
+				"id":         msg.ID,
+				"time":       msg.Time.Format(time.RFC3339),
+				"sender":     msg.Sender,
+				"content":    msg.Content,
+				"is_from_me": msg.IsFromMe,
+				"media_type": msg.MediaType,
+				"filename":   msg.Filename,
+			})
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"data":    messageList,
+		})
+	})
+
+	// Handler for searching contacts
+	http.HandleFunc("/api/contacts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		search := r.URL.Query().Get("search")
+		if search == "" {
+			http.Error(w, "search parameter is required", http.StatusBadRequest)
+			return
+		}
+
+		// Get chats and filter by search term
+		chats, err := messageStore.GetChats()
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Failed to search contacts: %v", err),
+			})
+			return
+		}
+
+		// Filter chats by search term
+		contactList := make([]map[string]interface{}, 0)
+		for jid, lastMessageTime := range chats {
+			if strings.Contains(strings.ToLower(jid), strings.ToLower(search)) {
+				contactList = append(contactList, map[string]interface{}{
+					"jid":               jid,
+					"last_message_time": lastMessageTime.Format(time.RFC3339),
+				})
+			}
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"data":    contactList,
+		})
+	})
+
+	// Handler for server status
+	http.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		status := map[string]interface{}{
+			"success":   true,
+			"connected": client.IsConnected(),
+			"timestamp": time.Now().Format(time.RFC3339),
+		}
+
+		if client.Store.ID != nil {
+			status["phone_number"] = client.Store.ID.User
+		}
+
+		json.NewEncoder(w).Encode(status)
+	})
+
+	http.HandleFunc("/api/sendFile", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		err := r.ParseMultipartForm(32 << 20) // 32 MB
+		if err != nil {
+			http.Error(w, "Failed to parse multipart form", http.StatusBadRequest)
+			return
+		}
+
+		recipient := r.FormValue("recipient")
+		caption := r.FormValue("caption")
+
+		if recipient == "" {
+			http.Error(w, "Recipient is required", http.StatusBadRequest)
+			return
+		}
+
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "File is required", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		// Create temporary file
+		tempFile, err := os.CreateTemp("", "upload_*"+filepath.Ext(header.Filename))
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Failed to create temp file: %v", err),
+			})
+			return
+		}
+		defer os.Remove(tempFile.Name())
+
+		// Copy uploaded file to temp file
+		_, err = tempFile.ReadFrom(file)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Failed to save file: %v", err),
+			})
+			return
+		}
+		tempFile.Close()
+
+		// Send the file
+		success, message := sendWhatsAppMessage(client, recipient, caption, tempFile.Name())
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": success,
+			"message": message,
+		})
+	})
+
+	// Handler for sending audio
+	http.HandleFunc("/api/sendAudio", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		err := r.ParseMultipartForm(32 << 20) // 32 MB
+		if err != nil {
+			http.Error(w, "Failed to parse multipart form", http.StatusBadRequest)
+			return
+		}
+
+		recipient := r.FormValue("recipient")
+
+		if recipient == "" {
+			http.Error(w, "Recipient is required", http.StatusBadRequest)
+			return
+		}
+
+		file, header, err := r.FormFile("audio")
+		if err != nil {
+			http.Error(w, "Audio file is required", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		// Create temporary file
+		tempFile, err := os.CreateTemp("", "audio_*"+filepath.Ext(header.Filename))
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Failed to create temp file: %v", err),
+			})
+			return
+		}
+		defer os.Remove(tempFile.Name())
+
+		// Copy uploaded file to temp file
+		_, err = tempFile.ReadFrom(file)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Failed to save file: %v", err),
+			})
+			return
+		}
+		tempFile.Close()
+
+		// Send the audio
+		success, message := sendWhatsAppMessage(client, recipient, "", tempFile.Name())
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": success,
+			"message": message,
+		})
+	})
+
 	// Start the server
 	serverAddr := fmt.Sprintf(":%d", port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
@@ -802,7 +1081,7 @@ func main() {
 		logger.Errorf("Failed to create store directory: %v", err)
 		return
 	}
-	
+
 	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
