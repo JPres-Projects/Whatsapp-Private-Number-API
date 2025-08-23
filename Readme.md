@@ -42,7 +42,7 @@ This project uses an unofficial method to communicate with WhatsApp. **This is a
 
 ```bash
 # Clone the repository
-git clone https://github.com/JPres-Projects/Whatsapp-Private-Number-API.git
+git clone https://github.com/JPres-Projects/Basic-Whatsapp-Private-API.git
 cd Whatsapp-Private-Number-API/whatsapp-bridge
 
 # Install dependencies
